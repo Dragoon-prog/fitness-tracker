@@ -1,22 +1,19 @@
 import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Calculator, Search, TrendingUp, Pizza, Plus, Trash2, Utensils, Target, User, Zap } from 'lucide-react';
+import { LayoutDashboard, BookOpen, TrendingUp, User, Search, Plus, Trash2, ChevronRight } from 'lucide-react';
 import axios from 'axios';
 
 export default function App() {
-  // --- 1. STATE & PERSISTENCE ---
+  // --- GLOBAL STATE (Shared across all pages) ---
   const [weight, setWeight] = useState(localStorage.getItem('weight') || 70);
   const [height, setHeight] = useState(localStorage.getItem('height') || 175);
   const [age, setAge] = useState(localStorage.getItem('age') || 25);
   const [gender, setGender] = useState(localStorage.getItem('gender') || 'male');
   const [activity, setActivity] = useState(localStorage.getItem('activity') || 1.2);
   const [fitnessGoal, setFitnessGoal] = useState(localStorage.getItem('fitnessGoal') || 'maintenance');
-  
   const [meals, setMeals] = useState(JSON.parse(localStorage.getItem('meals')) || []);
   const [liftData, setLiftData] = useState(JSON.parse(localStorage.getItem('lifts')) || [{ week: 'Wk 1', weight: 40 }]);
-  const [query, setQuery] = useState('');
-  const [foodResults, setFoodResults] = useState([]);
-  const [newLift, setNewLift] = useState({ weight: '', reps: '' });
 
   useEffect(() => {
     localStorage.setItem('meals', JSON.stringify(meals));
@@ -29,153 +26,177 @@ export default function App() {
     localStorage.setItem('fitnessGoal', fitnessGoal);
   }, [meals, liftData, weight, height, age, gender, activity, fitnessGoal]);
 
-  // --- 2. CALORIE & MACRO LOGIC ---
+  // --- CALCULATION LOGIC ---
   const bmr = (10 * weight) + (6.25 * height) - (5 * age) + (gender === 'male' ? 5 : -161);
   const tdee = Math.round(bmr * activity);
-  
   let goalCals = fitnessGoal === 'deficit' ? tdee - 500 : fitnessGoal === 'surplus' ? tdee + 500 : tdee;
-  
-  // Macros Goal (30/40/30 split)
-  const goalProt = Math.round((goalCals * 0.3) / 4);
-  const goalCarb = Math.round((goalCals * 0.4) / 4);
-  const goalFat = Math.round((goalCals * 0.3) / 9);
-
-  // Macros Eaten
-  const eaten = meals.reduce((acc, m) => ({
-    cals: acc.cals + m.cals,
-    p: acc.p + (m.p || 0),
-    c: acc.c + (m.c || 0),
-    f: acc.f + (m.f || 0)
-  }), { cals: 0, p: 0, c: 0, f: 0 });
-
-  // --- 3. FUNCTIONS ---
-  const searchFood = async () => {
-    if (!query) return;
-    try {
-      const res = await axios.get(`https://api.edamam.com/api/food-database/v2/parser?app_id=f027c2f8&app_key=3668870954b9d03195f1d439818816c7&ingr=${query}`);
-      setFoodResults(res.data.hints);
-    } catch (err) { console.error(err); }
-  };
-
-  const addMeal = (f) => {
-    setMeals([...meals, { 
-      id: Date.now(), 
-      name: f.label, 
-      cals: f.nutrients.ENERC_KCAL,
-      p: f.nutrients.PROCNT || 0,
-      c: f.nutrients.CHOCDF || 0,
-      f: f.nutrients.FAT || 0
-    }]);
-  };
-
-  const MacroBar = ({ label, current, goal, color }) => (
-    <div style={{ flex: 1 }}>
-      <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '2px' }}>{label}: {Math.round(current)}g</div>
-      <div style={{ height: '6px', background: '#e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
-        <div style={{ height: '100%', background: color, width: `${Math.min((current/goal)*100, 100)}%`, transition: 'width 0.4s' }}></div>
-      </div>
-    </div>
-  );
+  const eaten = meals.reduce((acc, m) => ({ cals: acc.cals + m.cals, p: acc.p + m.p, c: acc.c + m.c, f: acc.f + m.f }), { cals: 0, p: 0, c: 0, f: 0 });
 
   return (
-    <div style={containerStyle}>
-      <h1 style={{ textAlign: 'center', marginBottom: '20px' }}>Fitness Tracker</h1>
+    <Router>
+      <div style={appContainer}>
+        
+        {/* MAIN CONTENT AREA */}
+        <main style={mainContent}>
+          <Routes>
+            <Route path="/" element={<Dashboard goal={goalCals} eaten={eaten} goalP={goalCals*0.3/4} goalC={goalCals*0.4/4} goalF={goalCals*0.3/9} />} />
+            <Route path="/diary" element={<Diary meals={meals} setMeals={setMeals} />} />
+            <Route path="/lifting" element={<Lifting data={liftData} setData={setLiftData} />} />
+            <Route path="/profile" element={<Profile stats={{weight, height, age, gender, fitnessGoal}} setters={{setWeight, setHeight, setAge, setGender, setFitnessGoal}} />} />
+          </Routes>
+        </main>
 
-      {/* TOP DASHBOARD */}
-      <div style={summaryBar}>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
-            <span style={labelStyle}>CALORIES LEFT</span>
-            <span style={{ fontWeight: 'bold' }}>{goalCals - Math.round(eaten.cals)} / {goalCals}</span>
-          </div>
-          <div style={progressContainer}><div style={{ ...progressFill, width: `${(eaten.cals/goalCals)*100}%` }}></div></div>
-          <div style={{ display: 'flex', gap: '15px', marginTop: '15px' }}>
-            <MacroBar label="Prot" current={eaten.p} goal={goalProt} color="#ef4444" />
-            <MacroBar label="Carb" current={eaten.c} goal={goalCarb} color="#3b82f6" />
-            <MacroBar label="Fat" current={eaten.f} goal={goalFat} color="#f59e0b" />
-          </div>
-        </div>
+        {/* BOTTOM NAVIGATION BAR (Mobile Friendly) */}
+        <nav style={navBar}>
+          <NavLink to="/" icon={<LayoutDashboard />} label="Home" />
+          <NavLink to="/diary" icon={<BookOpen />} label="Diary" />
+          <NavLink to="/lifting" icon={<TrendingUp />} label="Stats" />
+          <NavLink to="/profile" icon={<User />} label="Profile" />
+        </nav>
       </div>
+    </Router>
+  );
+}
 
-      <div style={mainGrid}>
-        {/* PROFILE SETTINGS */}
-        <div style={cardStyle}>
-          <h3 style={headerStyle}><User size={18} /> Profile & Goal</h3>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-            <button onClick={() => setGender('male')} style={{ ...toggleBtn, backgroundColor: gender === 'male' ? '#3b82f6' : '#f1f5f9', color: gender === 'male' ? 'white' : '#64748b' }}>Male</button>
-            <button onClick={() => setGender('female')} style={{ ...toggleBtn, backgroundColor: gender === 'female' ? '#ec4899' : '#f1f5f9', color: gender === 'female' ? 'white' : '#64748b' }}>Female</button>
-          </div>
-          <select value={fitnessGoal} onChange={(e) => setFitnessGoal(e.target.value)} style={fullInput}>
-            <option value="deficit">Weight Loss (Deficit)</option>
-            <option value="maintenance">Maintenance</option>
-            <option value="surplus">Build Muscle (Surplus)</option>
-          </select>
-          <div style={inputRow}><label>Weight (kg)</label><input type="number" value={weight} onChange={(e) => setWeight(e.target.value)} style={smallInput} /></div>
-          <div style={inputRow}><label>Height (cm)</label><input type="number" value={height} onChange={(e) => setHeight(e.target.value)} style={smallInput} /></div>
-          <div style={inputRow}><label>Age</label><input type="number" value={age} onChange={(e) => setAge(e.target.value)} style={smallInput} /></div>
-        </div>
+// --- SUB-COMPONENTS (THE PAGES) ---
 
-        {/* FOOD SEARCH */}
-        <div style={cardStyle}>
-          <h3 style={headerStyle}><Search size={18} /> Food Database</h3>
-          <div style={{ display: 'flex', gap: '5px', marginBottom: '10px' }}>
-            <input placeholder="Search..." style={{ ...fullInput, margin: 0 }} value={query} onChange={(e) => setQuery(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && searchFood()} />
-            <button onClick={searchFood} style={btnStyle}><Plus size={18}/></button>
-          </div>
-          <div style={listStyle}>
-            {foodResults.map((item, i) => (
-              <div key={i} style={listItem}>
-                <div>{item.food.label} <small style={{ color: '#94a3b8' }}>({Math.round(item.food.nutrients.ENERC_KCAL)} kcal)</small></div>
-                <button onClick={() => addMeal(item.food)} style={addBtn}><Plus size={12}/></button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* DAILY MEALS */}
-        <div style={cardStyle}>
-          <h3 style={headerStyle}><Utensils size={18} /> Today's Diary</h3>
-          <div style={listStyle}>
-            {meals.map((m) => (
-              <div key={m.id} style={listItem}>
-                <span>{m.name}</span>
-                <Trash2 size={14} color="#ef4444" style={{ cursor: 'pointer' }} onClick={() => setMeals(meals.filter(x => x.id !== m.id))} />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* PROGRESSION */}
-        <div style={{ ...cardStyle, gridColumn: '1 / -1' }}>
-          <h3 style={headerStyle}><TrendingUp size={18} /> Strength Progression</h3>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-             <input placeholder="kg" type="number" value={newLift.weight} onChange={(e) => setNewLift({...newLift, weight: e.target.value})} style={smallInput} />
-             <input placeholder="reps" type="number" value={newLift.reps} onChange={(e) => setNewLift({...newLift, reps: e.target.value})} style={smallInput} />
-             <button onClick={() => setLiftData([...liftData, { week: `Wk ${liftData.length+1}`, weight: Math.round(newLift.weight * (1 + newLift.reps/30)) }])} style={btnStyle}>Log</button>
-          </div>
-          <div style={{ width: '100%', height: 200 }}>
-            <ResponsiveContainer><LineChart data={liftData}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="week" /><YAxis /><Tooltip /><Line type="monotone" dataKey="weight" stroke="#3b82f6" strokeWidth={3} /></LineChart></ResponsiveContainer>
-          </div>
-        </div>
+function Dashboard({ goal, eaten, goalP, goalC, goalF }) {
+  return (
+    <div style={pageStyle}>
+      <h2 style={pageTitle}>Daily Summary</h2>
+      <div style={heroCard}>
+        <span style={{ fontSize: '14px', opacity: 0.8 }}>Calories Remaining</span>
+        <h1 style={{ fontSize: '48px', margin: '10px 0' }}>{goal - Math.round(eaten.cals)}</h1>
+        <div style={progressBar}><div style={{ ...progressFill, width: `${(eaten.cals/goal)*100}%` }}></div></div>
+      </div>
+      
+      <div style={macroGrid}>
+        <MacroTile label="Protein" current={eaten.p} goal={goalP} color="#ef4444" />
+        <MacroTile label="Carbs" current={eaten.c} goal={goalC} color="#3b82f6" />
+        <MacroTile label="Fats" current={eaten.f} goal={goalF} color="#f59e0b" />
       </div>
     </div>
   );
 }
 
+function Diary({ meals, setMeals }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+
+  const searchFood = async () => {
+    const res = await axios.get(`https://api.edamam.com/api/food-database/v2/parser?app_id=f027c2f8&app_key=3668870954b9d03195f1d439818816c7&ingr=${query}`);
+    setResults(res.data.hints);
+  };
+
+  return (
+    <div style={pageStyle}>
+      <h2 style={pageTitle}>Food Diary</h2>
+      <div style={searchBox}>
+        <input placeholder="Search food..." value={query} onChange={(e) => setQuery(e.target.value)} style={inputStyle} />
+        <button onClick={searchFood} style={btnStyle}><Search size={18}/></button>
+      </div>
+      
+      {results.length > 0 && <div style={resultsList}>
+        {results.map((item, i) => (
+          <div key={i} style={listItem}>
+            <span>{item.food.label} ({Math.round(item.food.nutrients.ENERC_KCAL)} kcal)</span>
+            <button onClick={() => setMeals([...meals, { id: Date.now(), name: item.food.label, cals: item.food.nutrients.ENERC_KCAL, p: item.food.nutrients.PROCNT, c: item.food.nutrients.CHOCDF, f: item.food.nutrients.FAT }])} style={addBtn}><Plus size={14}/></button>
+          </div>
+        ))}
+      </div>}
+
+      <h3 style={{ marginTop: '20px' }}>Today's Log</h3>
+      {meals.map(m => (
+        <div key={m.id} style={listItem}>
+          <span>{m.name}</span>
+          <span>{Math.round(m.cals)} kcal <Trash2 size={14} onClick={() => setMeals(meals.filter(x => x.id !== m.id))} style={{ marginLeft: '10px', color: '#ef4444' }} /></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Lifting({ data, setData }) {
+  const [newLift, setNewLift] = useState({ w: '', r: '' });
+  return (
+    <div style={pageStyle}>
+      <h2 style={pageTitle}>Progression</h2>
+      <div style={heroCard}>
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={data}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="week" /><YAxis /><Tooltip /><Line type="monotone" dataKey="weight" stroke="#fff" strokeWidth={3} /></LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+        <input placeholder="kg" type="number" onChange={(e) => setNewLift({...newLift, w: e.target.value})} style={inputStyle} />
+        <input placeholder="reps" type="number" onChange={(e) => setNewLift({...newLift, r: e.target.value})} style={inputStyle} />
+        <button onClick={() => setData([...data, { week: `Wk ${data.length+1}`, weight: Math.round(newLift.w * (1 + newLift.r/30)) }])} style={btnStyle}>Log</button>
+      </div>
+    </div>
+  );
+}
+
+function Profile({ stats, setters }) {
+  return (
+    <div style={pageStyle}>
+      <h2 style={pageTitle}>Settings</h2>
+      <div style={cardStyle}>
+        <label style={labelStyle}>Gender</label>
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+          <button onClick={() => setters.setGender('male')} style={{ ...toggleBtn, background: stats.gender === 'male' ? '#3b82f6' : '#eee', color: stats.gender === 'male' ? '#fff' : '#000' }}>Male</button>
+          <button onClick={() => setters.setGender('female')} style={{ ...toggleBtn, background: stats.gender === 'female' ? '#ec4899' : '#eee', color: stats.gender === 'female' ? '#fff' : '#000' }}>Female</button>
+        </div>
+        <label style={labelStyle}>Weight (kg)</label>
+        <input type="number" value={stats.weight} onChange={(e) => setters.setWeight(e.target.value)} style={fullInput} />
+        <label style={labelStyle}>Height (cm)</label>
+        <input type="number" value={stats.height} onChange={(e) => setters.setHeight(e.target.value)} style={fullInput} />
+        <label style={labelStyle}>Goal</label>
+        <select value={stats.fitnessGoal} onChange={(e) => setters.setFitnessGoal(e.target.value)} style={fullInput}>
+          <option value="deficit">Lose Weight</option>
+          <option value="maintenance">Maintain</option>
+          <option value="surplus">Bulk</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// --- HELPERS ---
+function NavLink({ to, icon, label }) {
+  return (
+    <Link to={to} style={{ textDecoration: 'none', color: '#64748b', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+      {icon}
+      <span style={{ fontSize: '10px' }}>{label}</span>
+    </Link>
+  );
+}
+
+function MacroTile({ label, current, goal, color }) {
+  return (
+    <div style={{ ...cardStyle, flex: 1, textAlign: 'center' }}>
+      <span style={{ fontSize: '12px', color: '#64748b' }}>{label}</span>
+      <div style={{ fontWeight: 'bold', margin: '5px 0' }}>{Math.round(current)}g</div>
+      <div style={{ height: '4px', background: '#e2e8f0', borderRadius: '4px' }}><div style={{ height: '100%', background: color, width: `${(current/goal)*100}%` }}></div></div>
+    </div>
+  );
+}
+
 // --- STYLES ---
-const containerStyle = { padding: '20px', maxWidth: '1000px', margin: '0 auto', fontFamily: 'Inter, sans-serif', backgroundColor: '#f8fafc', minHeight: '100vh' };
-const summaryBar = { background: 'white', padding: '20px', borderRadius: '15px', marginBottom: '20px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' };
-const progressContainer = { height: '10px', background: '#e2e8f0', borderRadius: '10px', overflow: 'hidden' };
-const progressFill = { height: '100%', background: '#3b82f6', transition: 'width 0.5s ease' };
-const mainGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' };
-const cardStyle = { background: 'white', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' };
-const headerStyle = { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '15px', fontSize: '15px', fontWeight: 'bold' };
-const labelStyle = { fontSize: '11px', color: '#64748b', fontWeight: 'bold' };
-const inputRow = { display: 'flex', justifyContent: 'space-between', marginBottom: '10px', alignItems: 'center' };
-const smallInput = { padding: '8px', borderRadius: '8px', border: '1px solid #cbd5e1', width: '70px' };
-const fullInput = { padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', width: '100%', marginBottom: '10px' };
-const btnStyle = { background: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', padding: '10px', cursor: 'pointer' };
-const toggleBtn = { flex: 1, padding: '10px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' };
-const listStyle = { maxHeight: '200px', overflowY: 'auto' };
-const listItem = { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #f1f5f9', fontSize: '13px' };
-const addBtn = { background: '#f1f5f9', border: 'none', borderRadius: '6px', cursor: 'pointer', padding: '6px' };
+const appContainer = { minHeight: '100vh', backgroundColor: '#f8fafc', paddingBottom: '80px' };
+const mainContent = { padding: '20px' };
+const navBar = { position: 'fixed', bottom: 0, left: 0, right: 0, height: '70px', background: 'white', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-around', alignItems: 'center', boxShadow: '0 -2px 10px rgba(0,0,0,0.05)' };
+const pageStyle = { maxWidth: '500px', margin: '0 auto' };
+const pageTitle = { fontSize: '24px', fontWeight: 'bold', marginBottom: '20px' };
+const heroCard = { background: '#3b82f6', color: 'white', padding: '30px', borderRadius: '24px', boxShadow: '0 10px 20px rgba(59,130,246,0.3)', marginBottom: '20px' };
+const progressBar = { height: '8px', background: 'rgba(255,255,255,0.3)', borderRadius: '10px', marginTop: '15px' };
+const progressFill = { height: '100%', background: 'white', borderRadius: '10px' };
+const macroGrid = { display: 'flex', gap: '10px' };
+const cardStyle = { background: 'white', padding: '15px', borderRadius: '16px', border: '1px solid #e2e8f0' };
+const inputStyle = { flex: 1, padding: '12px', borderRadius: '12px', border: '1px solid #cbd5e1' };
+const fullInput = { width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #cbd5e1', marginBottom: '15px', boxSizing: 'border-box' };
+const btnStyle = { background: '#3b82f6', color: 'white', border: 'none', borderRadius: '12px', padding: '12px 20px' };
+const searchBox = { display: 'flex', gap: '10px', marginBottom: '20px' };
+const listItem = { display: 'flex', justifyContent: 'space-between', padding: '15px 0', borderBottom: '1px solid #f1f5f9' };
+const addBtn = { background: '#f1f5f9', border: 'none', borderRadius: '8px', padding: '8px' };
+const labelStyle = { display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#64748b', marginBottom: '5px' };
+const toggleBtn = { flex: 1, padding: '10px', border: 'none', borderRadius: '10px', cursor: 'pointer' };
+const resultsList = { background: 'white', borderRadius: '16px', padding: '0 15px', border: '1px solid #e2e8f0' };
