@@ -38,7 +38,6 @@ export default function App() {
     const user = session.user;
     const today = new Date().toISOString().split('T')[0];
 
-    // Fetch Profile
     const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
     if (profile) {
       setWeight(profile.weight || 70);
@@ -49,42 +48,20 @@ export default function App() {
       setActivity(profile.activity_level || 1.2);
     }
 
-    // Fetch Today's Meals
-    const { data: mealsData } = await supabase
-      .from('meals')
-      .select('*')
-      .eq('user_id', user.id)
-      .gte('created_at', `${today}T00:00:00`)
-      .lte('created_at', `${today}T23:59:59`);
+    const { data: mealsData } = await supabase.from('meals').select('*').eq('user_id', user.id).gte('created_at', `${today}T00:00:00`).lte('created_at', `${today}T23:59:59`);
     if (mealsData) setMeals(mealsData.map(m => ({ id: m.id, name: m.name, cals: m.calories, p: m.protein, c: m.carbs, f: m.fat })));
 
-    // Fetch Weight History
     const { data: weightData } = await supabase.from('weight_history').select('*').eq('user_id', user.id).order('date', { ascending: true });
     if (weightData) setWeightHistory(weightData.map(w => ({ date: new Date(w.date).toLocaleDateString(), weight: w.weight })));
   };
 
-  // --- 3. CLOUD ACTIONS ---
   const saveProfile = async () => {
-    const { error } = await supabase.from('profiles').upsert({
-      id: session.user.id, weight: parseFloat(weight), height: parseFloat(height), age: parseInt(age), gender, fitness_goal: fitnessGoal, activity_level: activity
-    });
-    if (!error) alert("Profile Synced to Cloud!");
+    const { error } = await supabase.from('profiles').upsert({ id: session.user.id, weight, height, age, gender, fitness_goal: fitnessGoal, activity_level: activity });
+    if (!error) alert("Profile Saved!");
   };
 
   const saveMeal = async (foodObj) => {
-    const { error } = await supabase.from('meals').insert([{ 
-      user_id: session.user.id, 
-      name: foodObj.label, 
-      calories: foodObj.nutrients.ENERC_KCAL,
-      protein: foodObj.nutrients.PROCNT, 
-      carbs: foodObj.nutrients.CHOCDF, 
-      fat: foodObj.nutrients.FAT
-    }]);
-    if (!error) syncAllData();
-  };
-
-  const deleteMeal = async (id) => {
-    const { error } = await supabase.from('meals').delete().eq('id', id);
+    const { error } = await supabase.from('meals').insert([{ user_id: session.user.id, name: foodObj.label, calories: foodObj.nutrients.ENERC_KCAL, protein: foodObj.nutrients.PROCNT, carbs: foodObj.nutrients.CHOCDF, fat: foodObj.nutrients.FAT }]);
     if (!error) syncAllData();
   };
 
@@ -93,13 +70,13 @@ export default function App() {
     if (!error) { setWeight(newW); syncAllData(); }
   };
 
-  // --- 4. CALCULATIONS ---
+  // --- CALCULATIONS ---
   const bmr = (10 * weight) + (6.25 * height) - (5 * age) + (gender === 'male' ? 5 : -161);
   const tdee = Math.round(bmr * activity);
   let goalCals = fitnessGoal === 'deficit' ? tdee - 500 : fitnessGoal === 'surplus' ? tdee + 500 : tdee;
   const eaten = meals.reduce((acc, m) => ({ cals: acc.cals + m.cals, p: acc.p + m.p, c: acc.c + m.c, f: acc.f + m.f }), { cals: 0, p: 0, c: 0, f: 0 });
 
-  if (loading) return <div style={{padding:'50px', textAlign:'center'}}>Syncing...</div>;
+  if (loading) return <div style={{padding:'50px', textAlign:'center'}}>Loading...</div>;
   if (!session) return <Auth />;
 
   return (
@@ -108,12 +85,11 @@ export default function App() {
         <main style={mainContent}>
           <Routes>
             <Route path="/" element={<Dashboard goal={goalCals} eaten={eaten} />} />
-            <Route path="/diary" element={<Diary meals={meals} onAdd={saveMeal} onDelete={deleteMeal} />} />
+            <Route path="/diary" element={<Diary meals={meals} onAdd={saveMeal} onDelete={async (id) => { await supabase.from('meals').delete().eq('id', id); syncAllData(); }} />} />
             <Route path="/weight" element={<WeightRecorder data={weightHistory} onSave={saveWeightLog} currentWeight={weight} />} />
             <Route path="/profile" element={<Profile stats={{weight, height, age, gender, fitnessGoal, activity}} setters={{setWeight, setHeight, setAge, setGender, setFitnessGoal, setActivity}} onSave={saveProfile} onLogout={() => supabase.auth.signOut()} />} />
           </Routes>
         </main>
-
         <nav style={navBar}>
           <NavLink to="/" icon={<LayoutDashboard />} label="Home" />
           <NavLink to="/diary" icon={<BookOpen />} label="Diary" />
@@ -133,8 +109,8 @@ function Dashboard({ goal, eaten }) {
     <div style={pageStyle}>
       <h2 style={pageTitle}>Summary</h2>
       <div style={{...heroCard, background: remaining < 0 ? '#ef4444' : '#3b82f6'}}>
-        <span style={{opacity:0.8, fontSize:'14px'}}>Calories Remaining</span>
-        <h1 style={{fontSize:'48px', margin:'10px 0'}}>{remaining}</h1>
+        <span>Calories Left</span>
+        <h1>{remaining}</h1>
         <div style={progressBar}><div style={{...progressFill, width:`${(eaten.cals/goal)*100}%`}}></div></div>
       </div>
       <div style={{display:'flex', gap:'10px'}}>
@@ -149,67 +125,36 @@ function Dashboard({ goal, eaten }) {
 function Diary({ meals, onAdd, onDelete }) {
   const [q, setQ] = useState('');
   const [res, setRes] = useState([]);
-
   const search = async () => {
-    if (!q) return;
-    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${q}&search_simple=1&action=process&json=1`;
-    const response = await axios.get(url);
-    const formatted = response.data.products
-      .filter(p => p.nutriments && p.nutriments['energy-kcal_100g'])
-      .map(p => ({
-        label: p.product_name || "Unknown",
-        nutrients: {
-          ENERC_KCAL: p.nutriments['energy-kcal_100g'],
-          PROCNT: p.nutriments.proteins_100g || 0,
-          CHOCDF: p.nutriments.carbohydrates_100g || 0,
-          FAT: p.nutriments.fat_100g || 0
-        }
-      }));
-    setRes(formatted);
+    const r = await axios.get(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${q}&search_simple=1&action=process&json=1`);
+    setRes(r.data.products.filter(p => p.nutriments && p.nutriments['energy-kcal_100g']).map(p => ({ label: p.product_name, nutrients: { ENERC_KCAL: p.nutriments['energy-kcal_100g'], PROCNT: p.nutriments.proteins_100g, CHOCDF: p.nutriments.carbohydrates_100g, FAT: p.nutriments.fat_100g } })));
   };
-
   return (
     <div style={pageStyle}>
       <h2 style={pageTitle}>Food Diary</h2>
       <div style={{display:'flex', gap:'10px', marginBottom:'20px'}}>
-        <input style={inputStyle} placeholder="Search..." value={q} onChange={e => setQ(e.target.value)} onKeyPress={e => e.key==='Enter' && search()} />
+        <input style={inputStyle} value={q} onChange={e => setQ(e.target.value)} placeholder="Search..." />
         <button style={btnStyle} onClick={search}><Search size={18}/></button>
       </div>
-      {res.length > 0 && <div style={cardStyle}>{res.slice(0,5).map((item, i) => (
-        <div key={i} style={listItem}>
-          <span>{item.label} <small>({Math.round(item.nutrients.ENERC_KCAL)} kcal)</small></span>
-          <Plus size={18} style={{cursor:'pointer', color:'#3b82f6'}} onClick={() => onAdd(item)} />
-        </div>
-      ))}</div>}
-      <h3 style={{marginTop:'30px'}}>Daily Log</h3>
-      <div style={cardStyle}>
-        {meals.length === 0 ? <p style={{color:'#94a3b8', textAlign:'center'}}>No items yet</p> : meals.map(m => (
-          <div key={m.id} style={listItem}>
-            <span>{m.name} <strong>{Math.round(m.cals)}</strong></span>
-            <Trash2 size={14} style={{color:'#ef4444', cursor:'pointer'}} onClick={() => onDelete(m.id)} />
-          </div>
-        ))}
-      </div>
+      {res.slice(0,5).map((item, i) => (<div key={i} style={listItem}><span>{item.label}</span> <Plus onClick={() => onAdd(item)} style={{cursor:'pointer'}} /></div>))}
+      <h3 style={{marginTop:'30px'}}>Today's Food</h3>
+      {meals.map(m => (<div key={m.id} style={listItem}><span>{m.name}</span> <Trash2 size={14} onClick={() => onDelete(m.id)} /></div>))}
     </div>
   );
 }
 
 function WeightRecorder({ data, onSave, currentWeight }) {
-  const [val, setVal] = useState(currentWeight);
   return (
     <div style={pageStyle}>
       <h2 style={pageTitle}>Weight Tracker</h2>
       <div style={heroCard}>
-        <ResponsiveContainer width="100%" height={180}>
-          <LineChart data={data}><XAxis dataKey="date" stroke="#fff" fontSize={10} /><YAxis stroke="#fff" fontSize={10} domain={['dataMin - 2', 'dataMax + 2']} /><Tooltip /><Line type="monotone" dataKey="weight" stroke="#fff" strokeWidth={3} dot={{r:4, fill:'#fff'}} /></LineChart>
+        <ResponsiveContainer width="100%" height={150}>
+          <LineChart data={data}><XAxis dataKey="date" stroke="#fff" fontSize={10} /><YAxis stroke="#fff" fontSize={10} /><Tooltip /><Line type="monotone" dataKey="weight" stroke="#fff" strokeWidth={3} /></LineChart>
         </ResponsiveContainer>
       </div>
       <div style={cardStyle}>
-        <label style={labelStyle}>Log Daily Weight (kg)</label>
-        <div style={{display:'flex', gap:'10px'}}>
-          <input type="number" style={inputStyle} value={val} onChange={e => setVal(e.target.value)} />
-          <button style={btnStyle} onClick={() => onSave(val)}>Log Weight</button>
-        </div>
+        <input type="number" style={inputStyle} defaultValue={currentWeight} id="weightInput" />
+        <button style={btnStyle} onClick={() => onSave(document.getElementById('weightInput').value)}>Log Weight</button>
       </div>
     </div>
   );
@@ -220,51 +165,51 @@ function Profile({ stats, setters, onSave, onLogout }) {
     <div style={pageStyle}>
       <h2 style={pageTitle}>Profile</h2>
       <div style={cardStyle}>
-        <label style={labelStyle}>Goal</label>
-        <select style={fullInput} value={stats.fitnessGoal} onChange={e => setters.setFitnessGoal(e.target.value)}>
-          <option value="deficit">Lose Weight</option>
-          <option value="maintenance">Maintain</option>
-          <option value="surplus">Bulk</option>
-        </select>
-        
-        <label style={labelStyle}>Gender</label>
+        {/* WEIGHT IS NOW THE FIRST ITEM */}
+        <label style={labelStyle}>CURRENT WEIGHT (kg)</label>
+        <input type="number" style={fullInput} value={stats.weight} onChange={e => setters.setWeight(e.target.value)} />
+
+        <label style={labelStyle}>GENDER</label>
         <div style={{display:'flex', gap:'10px', marginBottom:'20px'}}>
           <button onClick={() => setters.setGender('male')} style={{...toggleBtn, background: stats.gender==='male'?'#3b82f6':'#f1f5f9', color: stats.gender==='male'?'#fff':'#64748b'}}>Male</button>
           <button onClick={() => setters.setGender('female')} style={{...toggleBtn, background: stats.gender==='female'?'#ec4899':'#f1f5f9', color: stats.gender==='female'?'#fff':'#64748b'}}>Female</button>
         </div>
 
-        {/* --- WEIGHT ADDED BACK HERE --- */}
-        <label style={labelStyle}>Weight (kg)</label>
-        <input type="number" style={fullInput} value={stats.weight} onChange={e => setters.setWeight(e.target.value)} />
+        <label style={labelStyle}>GOAL</label>
+        <select style={fullInput} value={stats.fitnessGoal} onChange={e => setters.setFitnessGoal(e.target.value)}>
+          <option value="deficit">Lose Weight</option>
+          <option value="maintenance">Maintain</option>
+          <option value="surplus">Bulk</option>
+        </select>
 
-        <label style={labelStyle}>Height (cm)</label>
+        <label style={labelStyle}>HEIGHT (cm)</label>
         <input type="number" style={fullInput} value={stats.height} onChange={e => setters.setHeight(e.target.value)} />
         
-        <label style={labelStyle}>Age</label>
+        <label style={labelStyle}>AGE</label>
         <input type="number" style={fullInput} value={stats.age} onChange={e => setters.setAge(e.target.value)} />
         
-        <button onClick={onSave} style={{...btnStyle, width:'100%', marginBottom:'10px'}}>Sync to Cloud</button>
-        <button onClick={onLogout} style={{width:'100%', background:'none', border:'1px solid #ef4444', color:'#ef4444', padding:'10px', borderRadius:'12px', cursor:'pointer'}}>Logout</button>
+        <button onClick={onSave} style={{...btnStyle, width:'100%', marginBottom:'10px'}}>Sync Profile</button>
+        <button onClick={onLogout} style={{width:'100%', background:'none', border:'1px solid #ef4444', color:'#ef4444', padding:'10px', borderRadius:'12px'}}>Logout</button>
       </div>
     </div>
   );
 }
 
-// --- STYLES & HELPERS ---
+// --- STYLES ---
 const appContainer = { minHeight:'100vh', backgroundColor:'#f8fafc', paddingBottom:'90px' };
 const mainContent = { padding:'20px' };
-const navBar = { position:'fixed', bottom:0, left:0, right:0, height:'75px', background:'white', borderTop:'1px solid #e2e8f0', display:'flex', justifyContent:'space-around', alignItems:'center', boxShadow:'0 -2px 10px rgba(0,0,0,0.05)' };
+const navBar = { position:'fixed', bottom:0, left:0, right:0, height:'75px', background:'white', display:'flex', justifyContent:'space-around', alignItems:'center', borderTop:'1px solid #ddd' };
 const pageStyle = { maxWidth:'450px', margin:'0 auto' };
 const pageTitle = { fontSize:'24px', fontWeight:'bold', marginBottom:'20px', textAlign: 'center' };
-const heroCard = { color:'white', padding:'25px', borderRadius:'24px', boxShadow:'0 10px 20px rgba(0,0,0,0.1)', marginBottom:'20px' };
-const progressBar = { height:'8px', background:'rgba(255,255,255,0.3)', borderRadius:'10px', marginTop:'15px', overflow:'hidden' };
+const heroCard = { color:'white', padding:'25px', borderRadius:'24px', marginBottom:'20px' };
+const progressBar = { height:'8px', background:'rgba(255,255,255,0.3)', borderRadius:'10px', marginTop:'15px' };
 const progressFill = { height:'100%', background:'white' };
 const cardStyle = { background:'white', padding:'20px', borderRadius:'20px', border:'1px solid #e2e8f0', marginBottom:'15px' };
-const inputStyle = { flex:1, padding:'12px', borderRadius:'12px', border:'1px solid #cbd5e1', fontSize:'16px' };
+const inputStyle = { flex:1, padding:'12px', borderRadius:'12px', border:'1px solid #cbd5e1' };
 const fullInput = { width:'100%', padding:'12px', borderRadius:'12px', border:'1px solid #cbd5e1', marginBottom:'15px', boxSizing:'border-box' };
-const btnStyle = { background:'#3b82f6', color:'white', border:'none', borderRadius:'12px', padding:'12px 20px', fontWeight:'bold', cursor:'pointer' };
-const listItem = { display:'flex', justifyContent:'space-between', padding:'15px 0', borderBottom:'1px solid #f1f5f9' };
-const labelStyle = { display:'block', fontSize:'12px', fontWeight:'bold', color:'#64748b', marginBottom:'5px' };
-const toggleBtn = { flex:1, padding:'12px', border:'none', borderRadius:'12px', cursor:'pointer', fontWeight:'bold' };
-function NavLink({ to, icon, label }) { return <Link to={to} style={{ textDecoration:'none', color:'#64748b', display:'flex', flexDirection:'column', alignItems:'center', gap:'4px' }}> {icon} <span style={{fontSize:'10px'}}>{label}</span> </Link>; }
-function MacroTile({ label, current, goal, color }) { return <div style={{...cardStyle, flex:1, textAlign:'center', padding:'10px', marginBottom:0}}> <span style={{fontSize:'10px', color:'#64748b'}}>{label}</span> <div style={{fontWeight:'bold', fontSize:'14px'}}>{Math.round(current)}g</div> <div style={{height:'3px', background:'#eee', marginTop:'5px'}}><div style={{height:'100%', background:color, width:`${(current/goal)*100}%` || '0%'}}></div></div> </div>; }
+const btnStyle = { background:'#3b82f6', color:'white', border:'none', borderRadius:'12px', padding:'12px 20px', fontWeight:'bold' };
+const listItem = { display:'flex', justifyContent:'space-between', padding:'15px 0', borderBottom:'1px solid #eee' };
+const labelStyle = { display:'block', fontSize:'11px', fontWeight:'bold', color:'#64748b', marginBottom:'5px' };
+const toggleBtn = { flex:1, padding:'12px', border:'none', borderRadius:'12px', cursor:'pointer' };
+function NavLink({ to, icon, label }) { return <Link to={to} style={{ textDecoration:'none', color:'#64748b', display:'flex', flexDirection:'column', alignItems:'center' }}> {icon} <span style={{fontSize:'10px'}}>{label}</span> </Link>; }
+function MacroTile({ label, current, goal, color }) { return <div style={{...cardStyle, flex:1, textAlign:'center', padding:'10px', marginBottom:0}}> <span style={{fontSize:'10px'}}>{label}</span> <div style={{fontWeight:'bold'}}>{Math.round(current)}g</div> </div>; }
